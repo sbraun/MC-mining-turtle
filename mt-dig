@@ -1,0 +1,713 @@
+-- *****************************
+-- **** Programme de minage ****
+--
+--
+-- Date : 22/02/2013
+-- Auteur : Sebastien BRAUN
+-- Email : sebastien.braun@troll-idees.com
+-- *****************************
+
+
+-- *****************************
+-- *********** Config **********
+-- *****************************
+
+-- Enable debug level message
+local debug = true
+
+-- Enable rednet broadcast
+local broadcast = true
+
+
+-- 1 case = 1 fuelSlot
+local consoStep = 1
+
+
+-- Variables globales, ne pas modifier
+local TURTLE_TYPE = 'M'
+local BeginAnchor = nil
+local CurrentPos = nil
+local WorkPos = nil
+local minima = nil
+local connected = false
+local DEBUG_LEVEL = 0
+local LOG_LEVEL = 1
+local STATUS_LEVEL = 2
+
+-- Slot 1 & 2: Fuel, 2: Buffer Fuel, 
+-- Slot 3: Torch
+-- Slot 4,5,6,7: Cobble, Sand, Gravel, Dirt
+local fuelSlot = 1
+local torcheSlot = 3
+local cobbleSlot = 4
+local sandSlot = 5
+local gravelSlot = 6
+local dirtSlot = 7
+
+-- *****************************
+-- *********** Utils ***********
+-- *****************************
+
+-- Demande la saisie d'une valeur numerique. Retourne la valeur par defaut si
+-- l'utilisateur valide la question sans saisir de valeur
+-- @param string	question	Question
+-- @param int		default		Valeur par defaut
+-- @return int Retourne un entier
+function askInt(question, default)
+	local r = ""
+	write(question)
+	r = io.read()	
+	if r == "" then return default end
+	return tonumber(r)
+end
+
+-- Copie une table de position
+-- @param table		pos	Table de position
+-- @return table Retourne une copie
+function copyPos(pos)
+	local copy = {}
+	
+	copy.x = pos.x
+	copy.y = pos.y
+	copy.z = pos.z
+	copy.dir = pos.dir
+	
+	return copy
+end
+
+-- ***************************** 
+-- ****** API DEPLACEMENT ****** 
+-- ***************************** 
+
+-- Avance la tortue et met a jour sa position
+-- @return boolean Retourne True en cas de succes
+function mForward()
+	if turtle.forward() then
+		if CurrentPos.dir == 0 then CurrentPos.z = CurrentPos.z+1 end
+		if CurrentPos.dir == 1 then CurrentPos.x = CurrentPos.x+1 end
+		if CurrentPos.dir == 2 then CurrentPos.z = CurrentPos.z-1 end
+		if CurrentPos.dir == 3 then CurrentPos.x = CurrentPos.x-1 end
+		return true
+	else
+		logNet("BLOCKED ! CAN'T MOVE FORWARD !")
+		return false
+	end
+end
+
+-- Recule la tortue et met a jour sa position
+-- @return boolean Retourne True en cas de succes
+function mBack() 
+	if turtle.back() then
+		if (CurrentPos.dir == 0) then CurrentPos.z = CurrentPos.z-1 end
+		if (CurrentPos.dir == 1) then CurrentPos.x = CurrentPos.x-1 end
+		if (CurrentPos.dir == 2) then CurrentPos.z = CurrentPos.z+1 end
+		if (CurrentPos.dir == 3) then CurrentPos.x = CurrentPos.x+1 end
+		return true
+	else
+		logNet("BLOCKED ! CAN'T MOVE BACKWARD !")
+		return false
+	end
+end
+
+-- Monte la tortue et met a jour sa position
+-- @return boolean Retourne True en cas de succes
+function mUp() 
+	if turtle.up() == true then 
+		CurrentPos.y = CurrentPos.y+1
+		return true
+	else
+		return false
+	end
+end
+
+-- Descend la tortue et met a jour sa position
+-- @return boolean Retourne True en cas de succes
+function mDown() 
+	if turtle.down() == true then 
+		CurrentPos.y = CurrentPos.y-1
+		return true
+	else
+		return false
+	end
+end
+
+-- Tourne la tortue a gauche et met a jour sa position
+-- @return boolean Retourne True en cas de succes
+function mTurnLeft() 
+	turtle.turnLeft()
+	CurrentPos.dir = (CurrentPos.dir - 1) % 4
+	return true
+end
+
+-- Tourne la tortue a droite et met a jour sa position
+-- @return boolean Retourne True en cas de succes
+function mTurnRight() 
+	turtle.turnRight()
+	CurrentPos.dir = (CurrentPos.dir + 1) % 4
+	return true
+end
+
+-- Oriente la tortue dans la direction designee.
+-- 0:Nord, 1:Est, 2:Sud, 3:Ouest
+-- @param int dir	Direction
+function mDirection(dir)
+	
+	local d = nil
+	d = (dir - CurrentPos.dir) % 4
+	
+	if (d == 0) then return end
+	if (d == 1) then 
+		mTurnRight()
+		return
+	end
+	if (d == 2) then 
+		mTurnRight()
+		mTurnRight()
+		return
+	end
+	if (d == 3) then 
+		mTurnLeft()
+		return
+	end
+end
+
+-- Deplace la tortue vers la position designee (qui comprends aussi l'orientation)
+-- Le deplacement se fait en longeant les bords. Les obstacles rencontres
+-- sont minees. En cas d'obstacle non minable (mobs, joueurs, ...) la tortue
+-- attends la liberation du passage pour continuer.
+-- @param table	pos		Position
+function safeMove(pos)
+	
+	logNetDebug("Safe Move")
+	
+	-- Se retourner vers la bonne direction (3 ou 1)
+	-- Reviens sut l'axe des X
+	if (pos.x > CurrentPos.x) then
+		mDirection(1)
+	else
+		mDirection(3)
+	end
+	while CurrentPos.x ~= pos.x do
+		if mForward() == false and turtle.detect() then
+			turtle.dig()
+			mForward()
+			turtle.digUp()
+			turtle.digDown()
+		end
+	end
+
+	-- Se retourner vers la bonne direction (2 ou 0)
+	-- Reviens sur l'axe des Z
+	if (pos.z > CurrentPos.z) then
+		mDirection(0)
+	else
+		mDirection(2)
+	end
+	while CurrentPos.z ~= pos.z do
+		if mForward() == false and turtle.detect() then
+			turtle.dig()
+			mForward()
+			turtle.digUp()
+			turtle.digDown()
+		end
+	end
+
+	-- Se deplace sur l'axe y
+	if pos.y > CurrentPos.y then
+		while CurrentPos.y ~= pos.y do
+			if mUp() == false and turtle.detectUp() then
+				turtle.digUp()
+				mUp()
+			end
+		end
+	end
+	if pos.y < CurrentPos.y then
+		while CurrentPos.y ~= pos.y do
+			if mDown() == false and turtle.detectDown() then
+				turtle.digDown()
+				mDown()
+			end
+		end
+	end
+	
+	mDirection(pos.dir)
+	
+end
+
+-- Retourne la tortue a la position de depart
+function returnAnchor()
+	logNet("Retour a la base")
+	logNetDebug(" * {X="..tostring(BeginAnchor.x)..", Y="..tostring(BeginAnchor.y)..", Z="..tostring(BeginAnchor.z)..", }")
+	WorkPos = copyPos(CurrentPos)
+	safeMove(BeginAnchor)
+end
+
+-- Retourne la tortue a la derniere position de travail connue
+function returnWork()
+	logNet("Retour au travail")
+	safeMove(WorkPos)
+end
+
+-- ***************************** 
+-- ****** API Reseau & Sys ***** 
+-- *****************************
+
+-- Connecte la tortue au rednet. Necessite une "wireless tortule""
+-- @return boolean	Retourne true en cas de succes
+function connect()
+	if connected == true then return true end
+	-- Ouverture de modem + test connection (toujours right pour une tortue)
+	rednet.open("right")
+	connected = rednet.announce()
+	return connected
+end
+
+-- Broadcast un message sur Rednet.
+-- Supporte les types de message suivant :
+-- 	 DEBUG_LEVEL  : message de debug
+-- 	 LOG_LEVEL    : message informatif
+-- 	 STATUS_LEVEL : message de status (TODO - NON IMPLEMENTE)
+-- @param string Str	Message
+-- @param int level		Type de message
+-- @return boolean	Retourne true si la connexion au Rednet est ouverte
+function transmit(Str, level)
+	
+	if connect() == false then
+		return false
+	end
+	
+	-- Determination prefix
+	local prefix = " "
+	if level == DEBUG_LEVEL then
+		prefix = "D"
+	elseif level == LOG_LEVEL then
+		prefix = "L"
+	elseif level == STATUS_LEVEL then
+		prefix = "S"
+		-- textutils.serialize(Str)
+	end
+	
+	-- Broad cast 
+	rednet.broadcast(prefix..TURTLE_TYPE..Str)
+	
+	return true
+end
+
+-- Affiche un message informatif sur la console et sur le Rednet
+-- @param string Str	Message
+function logNet(Str)
+	if type( Str ) ~= "string" then return end
+	write( Str.."\n" )
+	if broadcast == true then transmit(Str, LOG_LEVEL) end
+end
+
+-- Affiche un message de debug sur la console et sur le Rednet
+-- N'affiche ni ne transmet rien si la variable globale "debug" edt false
+-- @param string Str	Message
+function logNetDebug(Str)
+	if debug == false then return end
+	if type( Str ) ~= "string" then return end
+	write( Str.."\n" )
+	if broadcast == true then transmit(Str, DEBUG_LEVEL) end
+end
+
+-- ***************************** 
+-- ****** API Minage ***********
+-- ***************************** 
+
+-- Retourne le nombre de slots libres dans l'inventaire de la tortue
+-- @return int	Nombre de slot libre
+function nbEmptySlots()
+	local nb = 0
+	
+	for i=8,16 do
+		if turtle.getItemCount(i) == 0 then nb = nb+1 end
+	end	
+	
+	return nb
+end
+
+-- Purge l'inventaire a partir des slots de comparaison.
+-- Les slots 1 a 3 ne sont pas du tout purges
+-- Les slots 4 a 7 sont purges pour ne garder qu'une pile de 1
+-- Les slots 8 et 16 sont jetes par terre s'ils correspondent aux slot 4 a 7
+function purgeGarbage()
+	
+	logNet("Garbage useless blocks")
+	-- Slots de comparaison
+	logNetDebug(" * comparaison slot 4 to 7")
+	for i=4,7 do
+		if turtle.getItemCount(i) > 1 then 
+			turtle.select(i)
+			turtle.drop(turtle.getItemCount(i) -1)
+		end
+	end
+
+	-- Slots de stockage
+	-- Jette tout ce qui ressemble aux slots 8 a 16
+	logNetDebug(" * slot 8 to 16")
+	for i=8,16 do
+		if turtle.getItemCount(i) > 0 then
+			turtle.select(i)
+			if (turtle.compareTo(cobbleSlot)) then 
+				logNetDebug(" * drop slot "..tostring(i).." (cobble)")
+				turtle.drop() 
+			end
+			if (turtle.compareTo(dirtSlot)) then 
+				logNetDebug(" * drop slot "..tostring(i).." (dirt)")
+				turtle.drop() 
+			end
+			if (turtle.compareTo(sandSlot))   then 
+				logNetDebug(" * drop slot "..tostring(i).." (sand)")
+				turtle.drop() 
+			end
+			if (turtle.compareTo(gravelSlot)) then 
+				logNetDebug(" * drop slot "..tostring(i).." (gravel)")
+				turtle.drop() 
+			end
+		end
+	end
+	logNetDebug(" * end garbage")
+	
+end
+
+-- Creuse un tunnel devant la tortue sur une hauteur de trois blocs (creuse au
+-- dessus, devant et sous la tortue).
+-- La tortue peux poser des torches tout les 7 blocs.
+-- Les effondrements (sable, gravier) sont geres. La tortue mine devant elle
+-- jusqu'a ce qu'elle puisse avancer. Si la tortue rencontre un obstacle non
+-- minable ou des blocs qui s'effondre, elle essaye 15 fois avant de s'arrêter.
+-- Les torches situees au dessus et au dessous de la tortue ne sont pas mines
+-- (bien que vu comme des blocs). Celles posees a la hauteur de la tortue sont 
+-- minees (car bloquantes !)
+-- @param int length			Longueur du tunnel
+-- @param boolean with_light	Si true, pose des torches (slot nb 3) tout les 7
+--								blocs
+-- @return boolean	Retourne true en cas de succes. Restourne false si l'excavation
+--					n'a pu être terminee, la tortue est quelque part dans le tunnel
+function excavateLine(length, with_light)
+
+	local passBlock = true
+	local watchDog = 0
+	local maxTry = 15
+
+	logNet("Excavate "..tostring(length).." ")
+	
+	turtle.select(torcheSlot)	
+	
+	-- Boucle sur la longueur du tunnel
+	for i=1,length do
+
+		passBlock = true
+		watchDog = 0
+		repeat
+			if turtle.detect() == true then 
+ 				logNetDebug(" * dig !")
+				turtle.dig()
+				sleep(0.15) -- TODO : que si gravel ou sand
+			end
+			passBlock = mForward()
+			watchDog = watchDog+1
+		until passBlock == true or watchDog > maxTry
+		
+		if passBlock == false then 
+			logNet(" * ERROR ! Path block by undiggable block !")
+			return false
+		end
+		
+		-- Creuse au dessus
+		watchDog = 0
+		while turtle.detectUp() and turtle.compareUp() == false and watchDog < maxTry do
+			-- Ne dig pas les torches
+ 			logNetDebug(" * dig up !")
+			turtle.digUp()
+			sleep(0.15) -- TODO : que si gravel ou sand
+			watchDog = watchDog+1
+		end
+
+		-- Creuse au dessous		
+		watchDog = 0
+		while turtle.detectDown() and turtle.compareDown() == false and watchDog < maxTry do
+			-- Ne dig pas les torches
+ 			logNetDebug(" * dig down !")
+			turtle.digDown()
+			watchDog = watchDog+1
+		end
+		
+		-- Place une torche tous les 7 blocs
+		if (with_light == true and (i % 7) == 0) then 
+			logNetDebug(" * light !")
+			turtle.placeDown() 
+		end
+
+	end
+	
+	return true
+end
+
+-- Consomme les recharges de fuel dans l'inventaire de la tortue.
+-- Consume des recharges jusqu'a ce que le fuel soit au maxima.
+-- @param int minima	Seuil minimum du fuel pour considerer que la recharge
+--						a reussi
+-- @param int maxiam	Seuil maximum du fuel
+-- @return boolean	Retourne true si le minima est atteints, false dans le cas contraire
+function refuelToStock(minima, maxima)
+
+	logNet("Refuel from stock")
+	logNet(" * stock actuel"..tostring(turtle.getFuelLevel()))
+	logNetDebug(" * try : between "..tostring(minima).." and "..tostring(maxima))
+
+	-- Deja recharge pas besoin
+	if turtle.getFuelLevel() >= maxima then
+		logNet(" * stock already good ! SKIP !")
+		return true
+	end
+
+	-- Prends dans le buffer
+	local isFuel = true
+	turtle.select(fuelSlot+1)
+	while isFuel == true and turtle.getItemCount(fuelSlot+1) > 0 and turtle.getFuelLevel() < maxima do
+		logNet(" * buffer !") -- TODO : virer
+		isFuel = turtle.refuel(1)
+		if isFuel == false then logNet(" * Slot "..tostring(fuelSlot+1).." is not fuel !") end
+	end
+
+	-- Prends dans le slot principal
+	isFuel = true
+	turtle.select(fuelSlot)
+	while isFuel == true and turtle.getItemCount(fuelSlot) > 0 and turtle.getFuelLevel() < maxima do
+		logNet(" * main !")
+		isFuel = turtle.refuel(1)
+		if isFuel == false then logNet(" * Slot "..tostring(fuelSlot).." is not fuel !") end
+	end
+
+	if turtle.getFuelLevel() < minima then
+		logNet(" * fuel level : "..tostring(turtle.getFuelLevel()).." too low !")
+		return false
+	end
+	
+	logNet(" * fuel level : "..tostring(turtle.getFuelLevel()))
+	return true
+end
+
+-- Ouvre le coffre place devant la tortue, utilise les objets qu'il contient
+-- pour recharger son niveau de fuel et remplir les deux slots d'inventaires
+-- dedies au fuel.
+-- @return boolean	Retourne true si le chargement a reussit et que le niveau de 
+--					Fuel est acceptable
+function refuelToBase()
+
+	logNet("Refuel from base")
+				
+	-- pas de coffre detecte
+	if turtle.detect() == false then
+		logNet(" * No chest ! ABORD !")
+		return false
+	end
+		
+	-- RAZ fuel
+	-- Load Fuel
+	logNetDebug(" * stock reload")
+	turtle.select(fuelSlot)
+	turtle.drop()
+	turtle.select(fuelSlot+1)
+	turtle.drop()
+	turtle.select(fuelSlot)
+	turtle.suck()
+	turtle.suck()
+	
+	-- Prends a minima 1 trajet, au maxima 3
+	refuelToStock(minima, minima*3)
+
+	-- RAZ fuel
+	-- Load Fuel
+	logNetDebug(" * stock reload")
+	turtle.select(fuelSlot)
+	turtle.drop()
+	turtle.select(fuelSlot+1)
+	turtle.drop()
+	turtle.select(fuelSlot)
+	turtle.suck()
+	turtle.suck()
+		
+	-- Stock vide ! On ne repart pas dans ces conditions quel que soit le
+	-- fuel level actuel
+	if turtle.getItemCount(fuelSlot) == 0 and turtle.getItemCount(fuelSlot+1) == 0 then
+		logNet(" * ERROR ! No fuel in turtle stock !")
+		return false
+	end
+	
+	-- Panne de fuel, impossible de recharge jusqu'au minimum
+	if turtle.getFuelLevel() < minima then
+		logNet(" * ERROR ! Not enough fuel for work !")
+		return false
+	end
+
+	logNet(" * OK ! Operation complete")
+	return true
+
+end
+
+-- Retourne a la base, decharge l'inventaire et refait le plein de fuel
+-- Redirige la tortue vers le travail
+-- @return boolean	Retourne false en cas d'erreur
+-- @see refuelToBase()
+function pitStop()
+	-- TODO check Position !
+	logNet("pitStop !")
+	returnAnchor()
+	mDirection(3) --coffre de gauche
+	unloadToBase()
+	-- TODO return false si impossible de decharger
+	
+	mDirection(2) -- coffre de derriere
+	if refuelToBase() == false then
+		-- Echec plein de fuel
+		logNet(" * pitSop FAILED !")
+		mDirection(0) -- realigne
+		return false
+	end
+	
+	-- Repositionne
+	mDirection(0) -- realigne
+	logNet(" * pitSop DONE !")
+	
+	return true
+end
+
+-- Decharge l'inventaire de la tortue dans le coffre de dechargement place
+-- devant la tortue. 
+-- Les slots 1 a 3 ne sont pas du tout purges
+-- Les slots 4 a 7 sont purges pour ne garder qu'une pile de 1
+-- Les slots 8 et 16 sont place dans le coffre s'ils correspondent aux slot 4 a 7
+-- @return boolean Retourne true en cas de resussite
+function unloadToBase()
+	logNet("Unload turtle")
+
+	-- A priori pas de coffre devant la tortue
+	if turtle.detect() == false then
+		logNet(" * ERROR : no chest !")
+		return false
+	end
+
+	-- Slots de comparaison
+	logNetDebug(" * partial unload slot 4 to 7")
+	for i=4,7 do
+		if turtle.getItemCount(i) > 0 then 
+			turtle.select(i)
+			turtle.drop(turtle.getItemCount(i) -1)
+		end
+	end
+
+	-- Slots de stockage
+	logNetDebug(" * unload slot 8 to 16")
+	for i=8,16 do
+		if turtle.getItemCount(i) > 0 then
+			turtle.select(i)
+			turtle.drop()
+		end
+	end
+	
+	-- TODO return false si l'inventaire ne dispo pas d'au moins un stack
+	-- de 8 a 16 vide
+	
+	return true
+end
+
+-- *****************************
+-- ****** Debut programme ******
+-- ***************************** 
+
+-- Initialise la tortue aux coordonnees de la base
+-- Declenche un pitstop (chargement fuel + purge inventaire)
+-- @param int min_fuel	Niveau du fuel minimal pour accomplir la tache
+-- @see pitStop()
+function boot(min_fuel)
+	logNetDebug("Booting…")
+	-- x, y, z, dir
+	-- dir : 0 devant, 1 : droite, 2, derriere, 3 a gauche
+	BeginAnchor = {x=0, y=0, z=0, dir=0}
+	CurrentPos = copyPos(BeginAnchor)
+	WorkPos = copyPos(BeginAnchor)
+	minima = min_fuel
+	
+	-- Preparation de la tortue
+	-- Recharge Fuel
+	-- Vide l'inventaire
+	pitStop()
+end
+
+-- Programme de minage.
+-- Demande a l'operateur de saisir la longueur des tunnels, le nombre de tunnel
+-- et l'espace entre les tunnels.
+function mineZone()
+
+	-- defaut
+	local tunnel_length = 64
+	local tunnel_width  = 5
+	local space         = 2
+	local deep          = 1
+
+	tunnel_length = askInt("Tunnel length ? ["..tostring(tunnel_length).."]", tunnel_length)
+	tunnel_width  = askInt("How many tunnels ? ["..tostring(tunnel_width).."]", tunnel_width)
+	space         = askInt("Space between tunnels ? ["..tostring(space).."]", space)
+	-- deep          = askInt("Tunnel length ["..tostring(tunnel_length).."] ?", deep)
+
+	-- Conso minimal pour effectuer la tache et revenir (+20% securite)
+	min_fuel = (tunnel_length*tunnel_width + tunnel_length + tunnel_width)*consoStep*deep*1.2
+
+	boot(min_fuel)
+
+	-- Place en position
+	mUp()
+	excavateLine(1, false)
+
+	-- Exploration en "S"
+	logNet("Time to work ! "..tostring(tunnel_width).."x"..tostring(tunnel_length).." (tick : "..tostring(space)..")")
+	for i=1,tunnel_width do
+		logNet("Tunnel nb "..tostring(i))
+
+		-- SI pas du fuel pour terminer la ligne ou plus de slot libre => retour 
+		-- SINON jette le trop plein d'objets sans valeur
+		if turtle.getFuelLevel() < min_fuel or nbEmptySlots() < 3 then
+			logNet("Refuel needed or not enough empy slot !")
+			pitStop() -- QUE POUR space = 0
+			returnWork() -- QUE POUR space = 0
+		else
+			purgeGarbage()			
+		end
+
+		-- Place des torches toutes les 4 lignes pour un space = 0
+		-- Sinon toutes les lignes
+		if excavateLine(tunnel_length-1, (space > 0 or i%3==1) ) == false then
+			logNet("ERROR : excavation FAILED !")
+			returnAnchor() -- QUE POUR space = 0
+			mDirection(0) -- realigne
+			return false
+		end
+
+		-- Repositionnement de la tortue
+		if i < tunnel_width then
+			if CurrentPos.dir == 0 then 
+				mTurnRight()
+				excavateLine(1+space, false)
+				mTurnRight()
+			else
+				mTurnLeft()
+				excavateLine(1+space, false)
+				mTurnLeft()
+			end
+		end
+	end
+	
+	-- Retour au bercail et dechargement
+	logNetDebug("Return to base")
+	pitStop()
+	
+	logNet("Job done Bye !")
+	
+	return true
+end
+
+-- Debute le programme de minage
+mineZone()

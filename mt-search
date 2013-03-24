@@ -1,0 +1,71 @@
+
+local connected = false
+local turtleList = nil
+
+function connect()
+        if connected == true then return true end
+        -- Ouverture de modem + test connection
+		-- Test de tous les cotés
+
+		local modemSides = {}
+		modemSides = {"left", "right", "top", "back"}
+
+		for i,s in pairs(modemSides) do
+	        if rednet.open(s) and rednet.announce()  then
+					connected = true
+	                write("Connected\n")
+		        	return connected
+	        end
+		end
+		
+        write("Connexion error !\n")
+        return connected
+end
+
+function printList()
+
+	term.clear()
+	-- clear ecran
+	-- boucle sur les tortues
+	
+	write("---------------------------------------------------\n")
+	write("| ID | Type | Distance                            |\n")
+	write("---------------------------------------------------\n")
+ 	for i,t in pairs(turtleList) do 
+	 	write("|  "..tostring(t.senderId).." |")
+	 	write("  "..tostring(t.turtleType).."   |")
+		write(" "..tostring(math.floor(t.distance)).." ")
+		write("                               \n")
+	end
+	write("---------------------------------------------------\n")
+	
+end
+
+
+function addTurtle(senderId, distance, turtleType)
+	
+	turtleList[senderId] = {senderId=senderId, distance=distance, turtleType=turtleType}
+
+end
+
+
+function start()
+
+        write("Start listening \n")
+		turtleList = {}
+
+        while connect() == true do
+                local senderId, message, distance = rednet.receive()
+
+				local turtleType = 'M'
+
+				-- ajoute la tortue dans la liste
+				addTurtle(senderId, distance, turtleType)
+				
+				printList()
+				sleep(2)
+        end
+
+end
+
+start()

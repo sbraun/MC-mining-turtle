@@ -1,0 +1,56 @@
+
+local connected = false
+local tID = nil
+
+write("Which one ? ")
+tID = io.read()
+tID = tonumber(tID)
+
+local debug = false
+local r = ""
+do
+	write("Shwo debug ? [y/N] ")
+	r = io.read()	
+while r~= "" and r~= "y" and r~= "n"
+if (r == "n") then
+	debug = false
+else
+	debug = true
+end
+
+function connect()
+        if connected == true then return true end
+        -- Ouverture de modem + test connection
+		-- Test de tous les cotés
+
+		local modemSides = {}
+		modemSides = {"left", "right", "top", "back"}
+
+		for i,s in pairs(modemSides) do
+	        if rednet.open(s) and rednet.announce()  then
+					connected = true
+	                write("Connected\n")
+		        	return connected
+	        end
+		end
+		
+        write("Connexion error !\n")
+        return connected
+end
+
+
+function start()
+
+        write("Listening "..tostring(tID).."\n")
+
+        while connect() == true do
+                local senderId, message, distance = rednet.receive()
+                if senderId == tID then 
+					if debug == true or string.sub(message,2,1) == "L" then
+						write( string.sub(message,3) .."\n") 
+					end
+				end
+        end
+end
+
+start()
